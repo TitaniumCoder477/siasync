@@ -110,5 +110,11 @@ attempting to build Siasync from source.
 #### build Siasync
 `make`
 
+---
+
+<img
+src="https://files.helpdocs.io/YzA4Zq3JuM/other/1571158167508/built-with-sia-color.png"
+width="400">
+
 ## License
 The MIT License (MIT)
