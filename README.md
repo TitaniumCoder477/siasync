@@ -112,7 +112,7 @@ attempting to build Siasync from source.
 
 ---
 
-<a src="https://sia.tech"><img
+<a href="https://sia.tech"><img
 src="https://files.helpdocs.io/YzA4Zq3JuM/other/1571158167508/built-with-sia-color.png"
 width="300"></a>
 
