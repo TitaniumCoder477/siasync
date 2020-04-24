@@ -260,6 +260,19 @@ func (sf *SiaFolder) eventWatcher() {
 				}
 			}
 
+			// RENAME event - handle as remove since an actual rename is handeled as REMOVE and CREATE
+			if event.Op&fsnotify.Rename == fsnotify.Rename {
+				log.WithFields(logrus.Fields{
+					"filename": filename,
+				}).Info("File removal detected, removing file")
+				err = sf.handleRemove(filename)
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"error": err.Error(),
+					}).Error("Error with handleRemove")
+				}
+			}
+
 			// REMOVE event
 			if event.Op&fsnotify.Remove == fsnotify.Remove && !sf.archive {
 				log.WithFields(logrus.Fields{
