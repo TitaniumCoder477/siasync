@@ -528,7 +528,9 @@ func (sf *SiaFolder) removeDeleted() error {
 			continue
 		}
 
-		filePath := filepath.Join(sf.path, siapath.String())
+		// sf.prefix
+		sp := strings.Split(siapath.String(), "/")
+		filePath := filepath.Join(sf.path, strings.Join(sp[1:], "/"))
 		if _, ok := sf.files[filePath]; !ok {
 			err = sf.handleRemove(filePath)
 			if err != nil {
