@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"strings"
@@ -74,13 +73,14 @@ func findAPIPassword() string {
 	}
 
 	// password from apipassword file
-	APIPasswordFile, err := ioutil.ReadFile(build.APIPasswordFile(build.DefaultSiaDir()))
+	// No password passed in, fetch the API Password
+	pw, err := build.APIPassword()
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Error("Could not read API password file")
+		fmt.Println("Exiting: Error getting API Password:", err)
+		os.Exit(1)
 	}
-	return strings.TrimSpace(string(APIPasswordFile))
+	
+	return pw
 }
 
 // testConnection test the connection to the sia network

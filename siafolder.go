@@ -14,7 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
 	"gitlab.com/NebulousLabs/Sia/modules"
-	"gitlab.com/NebulousLabs/Sia/modules/renter/siafile"
+	"gitlab.com/NebulousLabs/Sia/modules/renter/filesystem/siafile"
 
 	sia "gitlab.com/NebulousLabs/Sia/node/api/client"
 )
@@ -400,7 +400,7 @@ func (sf *SiaFolder) handleCreate(file string) error {
 
 	if !dryRun {
 		err = sf.client.RenterUploadPost(abspath, getSiaPath(relpath), dataPieces, parityPieces)
-		if err.Error() == siafile.ErrPathOverload.Error() {
+		if err == siafile.ErrPathOverload {
 			return nil
 		}
 		if err != nil {
@@ -428,7 +428,7 @@ func (sf *SiaFolder) handleRemove(file string) error {
 	}).Debug("Deleting file")
 
 	if !dryRun {
-		err = sf.client.RenterDeletePost(getSiaPath(relpath))
+		err = sf.client.RenterFileDeletePost(getSiaPath(relpath))
 		if err != nil {
 			return fmt.Errorf("error removing %v: %v", file, err)
 		}
@@ -544,7 +544,7 @@ func (sf *SiaFolder) removeDeleted() error {
 
 // filters Sia remote files, only files that match prefix parameter are returned
 func (sf *SiaFolder) getSiaFiles() (map[modules.SiaPath]modules.FileInfo, error) {
-	siaSyncDir, err := sf.client.RenterGetDir(newSiaPath(prefix))
+	siaSyncDir, err := sf.client.RenterDirGet(newSiaPath(prefix))
 	if err != nil {
 		return nil, err
 	}
