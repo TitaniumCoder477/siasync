@@ -27,11 +27,12 @@ var (
 
 // SiaFolder is a folder that is synchronized to a Sia node.
 type SiaFolder struct {
-	path    string
-	client  *sia.Client
-	archive bool
-	prefix  string
-	watcher *fsnotify.Watcher
+	path          string
+	client        *sia.Client
+	archive       bool
+	includeHidden bool
+	prefix        string
+	watcher       *fsnotify.Watcher
 
 	files map[string]string // files is a map of file paths to SHA256 checksums, used to reconcile file changes
 
@@ -61,6 +62,19 @@ func checkFile(path string) (bool, error) {
 
 	}
 
+	if !includeHidden {
+		// Exclude all files beginning with a dot e. g. ".hidden-file"
+		if strings.HasPrefix(filepath.Base(path), ".") {
+			log.Debug("Excluding " + path)
+			return false, nil
+		}
+		// Exclude all files ending with a ~ e. g. "readme.md~"
+		if strings.HasSuffix(filepath.Base(path), "~") {
+			log.Debug("Excluding " + path)
+			return false, nil
+		}
+	}
+
 	if exclude != "" {
 		if contains(excludeExtensions, strings.TrimLeft(filepath.Ext(path), ".")) {
 			return false, nil
@@ -79,13 +93,14 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 	}
 
 	sf := &SiaFolder{
-		path:      abspath,
-		files:     make(map[string]string),
-		closeChan: make(chan struct{}),
-		client:    client,
-		archive:   archive,
-		prefix:    prefix,
-		watcher:   nil,
+		path:          abspath,
+		files:         make(map[string]string),
+		closeChan:     make(chan struct{}),
+		client:        client,
+		archive:       archive,
+		includeHidden: includeHidden,
+		prefix:        prefix,
+		watcher:       nil,
 	}
 
 	// watch for file changes
