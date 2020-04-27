@@ -14,7 +14,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
 	"gitlab.com/NebulousLabs/Sia/modules"
-	"gitlab.com/NebulousLabs/Sia/modules/renter/filesystem/siafile"
 
 	sia "gitlab.com/NebulousLabs/Sia/node/api/client"
 )
@@ -428,10 +427,13 @@ func (sf *SiaFolder) handleCreate(file string) error {
 
 	if !dryRun {
 		err = sf.client.RenterUploadPost(abspath, getSiaPath(relpath), dataPieces, parityPieces)
-		if err == siafile.ErrPathOverload {
-			return nil
-		}
 		if err != nil {
+			// Note: This should be resolved by using err.Error() == siafile.ErrorPathOverload.Error()
+			//       Unfortunately the string values of the Error() instances do currently not match.
+			// ToDo: Request Sia to support errors.is(err, siafile.ErrorPathOverload)
+			if strings.Contains(err.Error(), "a file or folder already exists at the specified path") {
+				return nil
+			}
 			return fmt.Errorf("error uploading %v: %v", file, err)
 		}
 	}
