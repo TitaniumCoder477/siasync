@@ -1,6 +1,5 @@
 package main
 
-// TODO Support create emtpy local directories in Sia on startup
 // TODO Delete localy removed directories in Sia on startup
 
 import (
@@ -134,6 +133,28 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 			// subdirectories must be added to the watcher.
 			if sf.watcher != nil {
 				sf.watcher.Add(walkpath)
+			}
+			sf.files[walkpath] = ""
+			// Check if dir exists on Sia - if not create it.
+			if !sf.isDirectory(walkpath) {
+				relpath, err := filepath.Rel(sf.path, walkpath)
+				// Ignore the sync prefix path
+				if relpath == "." {
+					return nil
+				}
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"file": walkpath,
+					}).Error("Error getting relative path")
+					return err
+				}
+				err = sf.client.RenterDirCreatePost(getSiaPath(relpath))
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"file": walkpath,
+					}).Error("Error creating not existing file on Sia")
+					return err
+				}
 			}
 			return nil
 		}
@@ -543,6 +564,16 @@ func (sf *SiaFolder) uploadNonExisting() error {
 	}
 
 	for file := range sf.files {
+		relpath, err := filepath.Rel(sf.path, file)
+		if err != nil {
+			return err
+		}
+
+		// Ignore directories
+		if sf.isDirectory(relpath) {
+			continue
+		}
+
 		goodForWrite, err := checkFile(filepath.Clean(file))
 		if err != nil {
 			log.WithFields(logrus.Fields{
@@ -553,10 +584,6 @@ func (sf *SiaFolder) uploadNonExisting() error {
 			continue
 		}
 
-		relpath, err := filepath.Rel(sf.path, file)
-		if err != nil {
-			return err
-		}
 		if _, ok := renterFiles[getSiaPath(relpath)]; !ok {
 			err := sf.handleCreate(file)
 			if err != nil {
