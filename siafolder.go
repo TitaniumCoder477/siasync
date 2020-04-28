@@ -1,5 +1,8 @@
 package main
 
+// TODO Support create emtpy local directories in Sia on startup
+// TODO Delete localy removed directories in Sia on startup
+
 import (
 	"crypto/sha256"
 	"errors"
@@ -252,6 +255,7 @@ func (sf *SiaFolder) eventWatcher() {
 			f, err := os.Stat(filename)
 			if err == nil && f.IsDir() {
 				sf.watcher.Add(filename)
+				sf.handleDirCreate(filename)
 				continue
 			}
 			goodForWrite, err := checkFile(filename)
@@ -289,14 +293,19 @@ func (sf *SiaFolder) eventWatcher() {
 
 			// REMOVE event
 			if event.Op&fsnotify.Remove == fsnotify.Remove && !sf.archive {
-				log.WithFields(logrus.Fields{
-					"filename": filename,
-				}).Info("File removal detected, removing file")
-				err = sf.handleRemove(filename)
-				if err != nil {
+				// Ignore multiple fired inode events by checking if the
+				// to be removed file is still know by sf
+				_, exists := sf.files[filename]
+				if exists {
 					log.WithFields(logrus.Fields{
-						"error": err.Error(),
-					}).Error("Error with handleRemove")
+						"filename": filename,
+					}).Info("File removal detected, removing file")
+					err = sf.handleRemove(filename)
+					if err != nil {
+						log.WithFields(logrus.Fields{
+							"error": err.Error(),
+						}).Error("Error with handleRemove")
+					}
 				}
 			}
 
@@ -359,9 +368,12 @@ func (sf *SiaFolder) isFile(file string) (bool, error) {
 		return false, fmt.Errorf("error getting relative path: %v", err)
 	}
 
-	_, err = sf.client.RenterFileGet(newSiaPath(relpath))
+	_, err = sf.client.RenterFileGet(getSiaPath(relpath))
 	exists := true
 	if err != nil && strings.Contains(err.Error(), "no file known") {
+		exists = false
+	}
+	if err != nil && strings.Contains(err.Error(), "unable to get the fileinfo") {
 		exists = false
 	}
 	return exists, nil
@@ -409,6 +421,33 @@ func getSiaPath(relpath string) modules.SiaPath {
 	return newSiaPath(filepath.Join(prefix, relpath))
 }
 
+// handleDirCreate handle a file creation event for a dir. `file` is a relative path
+// to the file on the disk.
+func (sf *SiaFolder) handleDirCreate(file string) error {
+	abspath, err := filepath.Abs(file)
+	if err != nil {
+		return fmt.Errorf("error getting absolute path to create: %v", err)
+	}
+	relpath, err := filepath.Rel(sf.path, file)
+	if err != nil {
+		return fmt.Errorf("error getting relative path to create: %v", err)
+	}
+
+	log.WithFields(logrus.Fields{
+		"abspath": abspath,
+	}).Debug("Creating directory")
+
+	if !dryRun {
+		err = sf.client.RenterDirCreatePost(getSiaPath(relpath))
+		if err != nil {
+			return fmt.Errorf("error creating %v: %v", file, err)
+		}
+	}
+
+	sf.files[file] = ""
+	return nil
+}
+
 // handleCreate handles a file creation event. `file` is a relative path to the
 // file on disk.
 func (sf *SiaFolder) handleCreate(file string) error {
@@ -446,6 +485,17 @@ func (sf *SiaFolder) handleCreate(file string) error {
 	return nil
 }
 
+// isDirectory checks if `file` given as relative path is a directory.
+func (sf *SiaFolder) isDirectory(file string) bool {
+	// err will be nil if file is a dir
+	_, err := sf.client.RenterDirGet(getSiaPath(file))
+	if err == nil {
+		return true
+	}
+
+	return false
+}
+
 // handleRemove handles a file removal event.
 func (sf *SiaFolder) handleRemove(file string) error {
 	relpath, err := filepath.Rel(sf.path, file)
@@ -458,9 +508,25 @@ func (sf *SiaFolder) handleRemove(file string) error {
 	}).Debug("Deleting file")
 
 	if !dryRun {
-		err = sf.client.RenterFileDeletePost(getSiaPath(relpath))
+		didRunSiaCmd := false
+		if sf.isDirectory(relpath) {
+			err = sf.client.RenterDirDeletePost(getSiaPath(relpath))
+			didRunSiaCmd = true
+		}
+
+		if ok, _ := sf.isFile(file); ok {
+			err = sf.client.RenterFileDeletePost(getSiaPath(relpath))
+			didRunSiaCmd = true
+		}
+
 		if err != nil {
 			return fmt.Errorf("error removing %v: %v", file, err)
+		}
+
+		if !didRunSiaCmd {
+			log.WithFields(logrus.Fields{
+				"file": file,
+			}).Error("Unhandled delete event")
 		}
 	}
 
