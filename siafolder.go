@@ -361,6 +361,17 @@ func uploadRetry(sf *SiaFolder, filename string) {
 	}
 }
 
+// isDirectory checks if `file` given as relative path is a directory.
+func (sf *SiaFolder) isDirectory(file string) bool {
+	// err will be nil if file is a dir
+	_, err := sf.client.RenterDirGet(getSiaPath(file))
+	if err == nil {
+		return true
+	}
+
+	return false
+}
+
 // isFile checks to see if the file exists on Sia
 func (sf *SiaFolder) isFile(file string) (bool, error) {
 	relpath, err := filepath.Rel(sf.path, file)
@@ -483,17 +494,6 @@ func (sf *SiaFolder) handleCreate(file string) error {
 	}
 	sf.files[file] = checksum
 	return nil
-}
-
-// isDirectory checks if `file` given as relative path is a directory.
-func (sf *SiaFolder) isDirectory(file string) bool {
-	// err will be nil if file is a dir
-	_, err := sf.client.RenterDirGet(getSiaPath(file))
-	if err == nil {
-		return true
-	}
-
-	return false
 }
 
 // handleRemove handles a file removal event.
