@@ -402,6 +402,7 @@ func (sf *SiaFolder) isFile(file string) (bool, error) {
 
 	_, err = sf.client.RenterFileGet(getSiaPath(relpath))
 	exists := true
+	// TODO Refactor to propper error handling e.g. compare err.Error() or use errors.Is()
 	if err != nil && strings.Contains(err.Error(), "no file known") {
 		exists = false
 	}
@@ -499,9 +500,9 @@ func (sf *SiaFolder) handleCreate(file string) error {
 	if !dryRun {
 		err = sf.client.RenterUploadPost(abspath, getSiaPath(relpath), dataPieces, parityPieces)
 		if err != nil {
-			// Note: This should be resolved by using err.Error() == siafile.ErrorPathOverload.Error()
-			//       Unfortunately the string values of the Error() instances do currently not match.
-			// ToDo: Request Sia to support errors.is(err, siafile.ErrorPathOverload)
+			// TODO This should be resolved by using err.Error() == siafile.ErrorPathOverload.Error()
+			//      Unfortunately the string values of the Error() instances do currently not match.
+			//      Alternative: Request Sia to support errors.Is(err, siafile.ErrorPathOverload)
 			if strings.Contains(err.Error(), "a file or folder already exists at the specified path") {
 				return nil
 			}
