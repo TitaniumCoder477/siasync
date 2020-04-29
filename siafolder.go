@@ -154,14 +154,10 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 					return err
 				}
 			}
-			// If directory exists, remove files & directories inside from Sia no longer existing locally
+			// If directory exists, remove files inside from Sia no longer existing locally
 			if !archive {
 				log.Info("Removing directories & files missing from local directory")
 				err = sf.removeDeletedFiles(walkpath)
-				if err != nil {
-					return err
-				}
-				err = sf.removeDeletedDirectories(walkpath)
 				if err != nil {
 					return err
 				}
@@ -693,6 +689,12 @@ func (sf *SiaFolder) removeDeletedDirectories(path string) error {
 	for siapath := range renterDirectories {
 		// sf.prefix
 		sp := strings.Split(siapath.String(), "/")
+
+		// If this is a subdirectory in current directory ascend to it
+		if len(sp) > len(strings.Split(path, "/")) {
+			sf.removeDeletedDirectories(strings.Join(sp, "/"))
+		}
+
 		filePath := filepath.Join(sf.path, strings.Join(sp[1:], "/"))
 		if _, ok := sf.files[filePath]; !ok {
 			err = sf.handleRemove(filePath)
@@ -726,11 +728,9 @@ func (sf *SiaFolder) getSiaFiles(path string) (map[modules.SiaPath]modules.FileI
 
 // filters Sia remote directories, only directories that match prefix parameter are returned
 func (sf *SiaFolder) getSiaDirectories(path string) (map[modules.SiaPath]modules.DirectoryInfo, error) {
-	relpath, err := filepath.Rel(sf.path, path)
-	if err != nil && path != sf.prefix {
-		return nil, err
-	}
-	siaSyncDir, err := sf.client.RenterDirGet(getSiaPath(relpath))
+	// To get relative path remove the prefix
+	lpx := len(strings.Split(sf.prefix, "/"))
+	siaSyncDir, err := sf.client.RenterDirGet(getSiaPath(strings.Join(strings.Split(path, "/")[lpx:], "/")))
 	if err != nil {
 		return nil, err
 	}
