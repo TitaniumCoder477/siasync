@@ -86,6 +86,7 @@ func checkFile(path string) (bool, error) {
 // NewSiafolder creates a new SiaFolder using the provided path and api
 // address.
 func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
+	path = filepath.Clean(path)
 	abspath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
