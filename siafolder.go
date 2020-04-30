@@ -124,6 +124,7 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 			return err
 		}
 		if walkpath == path {
+			sf.files[walkpath] = ""
 			return nil
 		}
 
