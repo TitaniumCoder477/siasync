@@ -482,6 +482,9 @@ func (sf *SiaFolder) handleDirCreate(file string) error {
 	}
 
 	sf.files[file] = ""
+	if sf.watcher != nil {
+		sf.watcher.Add(abspath)
+	}
 	return nil
 }
 
