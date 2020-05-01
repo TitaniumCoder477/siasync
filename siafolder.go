@@ -130,6 +130,13 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 
 		// Check if a Directory was found
 		if f.IsDir() {
+			if !includeHidden {
+				// Exclude all dirs beginning with a dot e. g. ".hidden-dir"
+				if strings.HasPrefix(filepath.Base(walkpath), ".") {
+					log.Debug("Excluding " + walkpath)
+					return nil
+				}
+			}
 			// subdirectories must be added to the watcher.
 			if sf.watcher != nil {
 				sf.watcher.Add(walkpath)
@@ -157,6 +164,20 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 				}
 			}
 			return nil
+		}
+
+		// Check if this is a file in a hidden dir
+		if !includeHidden {
+			// Exclude all dirs beginning with a dot e. g. ".hidden-dir"
+			// To get relative path remove the prefix
+			lp := len(strings.Split(path, "/"))
+			subdirtokens := strings.Split(walkpath, "/")[lp:]
+			for _, token := range subdirtokens {
+				if strings.HasPrefix(token, ".") {
+					log.Debug("Excluding " + walkpath)
+					return nil
+				}
+			}
 		}
 
 		// File Found
@@ -277,6 +298,24 @@ func (sf *SiaFolder) eventWatcher() {
 			return
 		case event := <-sf.watcher.Events:
 			filename := filepath.Clean(event.Name)
+
+			if !includeHidden {
+				// Exclude all dirs beginning with a dot e. g. ".hidden-dir"
+				// To get relative path remove the prefix
+				lp := len(strings.Split(sf.path, "/"))
+				subdirtokens := strings.Split(filename, "/")[lp:]
+				ishidden := false
+				for _, token := range subdirtokens {
+					if strings.HasPrefix(token, ".") {
+						log.Debug("Excluding " + filename)
+						ishidden = true
+					}
+				}
+				if ishidden {
+					continue
+				}
+			}
+
 			f, err := os.Stat(filename)
 			if err == nil && f.IsDir() {
 				sf.watcher.Add(filename)
