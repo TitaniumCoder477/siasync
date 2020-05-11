@@ -98,6 +98,8 @@ usage: siasync <flags> <directory-to-sync>
         Folder on Sia to sync files too (default "siasync")
   -sync-only
         Sync, don't monitor directory for changes
+  -include-hidden
+        By default, hidden files are excluded from the sync. Set include-hidden to true to include them
 ```
 
 ## Building from Source
