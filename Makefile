@@ -15,6 +15,7 @@ $(PLATFORMS):
 	GOOS=$(os) GOARCH=$(arch) go build -o 'Siasync-$(os)-$(arch)' *.go
 
 dependencies:
+	go get -u github.com/sirupsen/logrus
 	go get -u gitlab.com/NebulousLabs/Sia/node/api/client
 	go get -u github.com/fsnotify/fsnotify
 	go get -u gitlab.com/NebulousLabs/Sia/modules

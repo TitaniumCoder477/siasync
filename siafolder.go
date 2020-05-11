@@ -14,7 +14,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
 	"gitlab.com/NebulousLabs/Sia/modules"
-	"gitlab.com/NebulousLabs/Sia/modules/renter/siafile"
 
 	sia "gitlab.com/NebulousLabs/Sia/node/api/client"
 )
@@ -27,11 +26,12 @@ var (
 
 // SiaFolder is a folder that is synchronized to a Sia node.
 type SiaFolder struct {
-	path    string
-	client  *sia.Client
-	archive bool
-	prefix  string
-	watcher *fsnotify.Watcher
+	path          string
+	client        *sia.Client
+	archive       bool
+	includeHidden bool
+	prefix        string
+	watcher       *fsnotify.Watcher
 
 	files map[string]string // files is a map of file paths to SHA256 checksums, used to reconcile file changes
 
@@ -61,6 +61,19 @@ func checkFile(path string) (bool, error) {
 
 	}
 
+	if !includeHidden {
+		// Exclude all files beginning with a dot e. g. ".hidden-file"
+		if strings.HasPrefix(filepath.Base(path), ".") {
+			log.Debug("Excluding " + path)
+			return false, nil
+		}
+		// Exclude all files ending with a ~ e. g. "readme.md~"
+		if strings.HasSuffix(filepath.Base(path), "~") {
+			log.Debug("Excluding " + path)
+			return false, nil
+		}
+	}
+
 	if exclude != "" {
 		if contains(excludeExtensions, strings.TrimLeft(filepath.Ext(path), ".")) {
 			return false, nil
@@ -73,19 +86,21 @@ func checkFile(path string) (bool, error) {
 // NewSiafolder creates a new SiaFolder using the provided path and api
 // address.
 func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
+	path = filepath.Clean(path)
 	abspath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 
 	sf := &SiaFolder{
-		path:      abspath,
-		files:     make(map[string]string),
-		closeChan: make(chan struct{}),
-		client:    client,
-		archive:   archive,
-		prefix:    prefix,
-		watcher:   nil,
+		path:          abspath,
+		files:         make(map[string]string),
+		closeChan:     make(chan struct{}),
+		client:        client,
+		archive:       archive,
+		includeHidden: includeHidden,
+		prefix:        prefix,
+		watcher:       nil,
 	}
 
 	// watch for file changes
@@ -109,16 +124,60 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 			return err
 		}
 		if walkpath == path {
+			sf.files[walkpath] = ""
 			return nil
 		}
 
 		// Check if a Directory was found
 		if f.IsDir() {
+			if !includeHidden {
+				// Exclude all dirs beginning with a dot e. g. ".hidden-dir"
+				if strings.HasPrefix(filepath.Base(walkpath), ".") {
+					log.Debug("Excluding " + walkpath)
+					return nil
+				}
+			}
 			// subdirectories must be added to the watcher.
 			if sf.watcher != nil {
 				sf.watcher.Add(walkpath)
 			}
+			sf.files[walkpath] = ""
+			// Check if dir exists on Sia - if not create it.
+			if !sf.isDirectory(walkpath) {
+				relpath, err := filepath.Rel(sf.path, walkpath)
+				// Ignore the sync prefix path
+				if relpath == "." {
+					return nil
+				}
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"file": walkpath,
+					}).Error("Error getting relative path")
+					return err
+				}
+				err = sf.client.RenterDirCreatePost(getSiaPath(relpath))
+				if err != nil {
+					log.WithFields(logrus.Fields{
+						"file": walkpath,
+					}).Error("Error creating not existing file on Sia")
+					return err
+				}
+			}
 			return nil
+		}
+
+		// Check if this is a file in a hidden dir
+		if !includeHidden {
+			// Exclude all dirs beginning with a dot e. g. ".hidden-dir"
+			// To get relative path remove the prefix
+			lp := len(strings.Split(path, "/"))
+			subdirtokens := strings.Split(walkpath, "/")[lp:]
+			for _, token := range subdirtokens {
+				if strings.HasPrefix(token, ".") {
+					log.Debug("Excluding " + walkpath)
+					return nil
+				}
+			}
 		}
 
 		// File Found
@@ -142,10 +201,14 @@ func NewSiafolder(path string, client *sia.Client) (*SiaFolder, error) {
 		return nil, err
 	}
 
-	// remove files that are in Sia but not in local directory
+	// remove files & directories that are in Sia but not in local directory
 	if !archive {
-		log.Info("Removing files missing from local directory")
-		err = sf.removeDeleted()
+		log.Info("Removing files & directories missing from local directory")
+		err = sf.removeDeletedFiles(sf.prefix)
+		if err != nil {
+			return nil, err
+		}
+		err = sf.removeDeletedDirectories(sf.prefix)
 		if err != nil {
 			return nil, err
 		}
@@ -235,9 +298,28 @@ func (sf *SiaFolder) eventWatcher() {
 			return
 		case event := <-sf.watcher.Events:
 			filename := filepath.Clean(event.Name)
+
+			if !includeHidden {
+				// Exclude all dirs beginning with a dot e. g. ".hidden-dir"
+				// To get relative path remove the prefix
+				lp := len(strings.Split(sf.path, "/"))
+				subdirtokens := strings.Split(filename, "/")[lp:]
+				ishidden := false
+				for _, token := range subdirtokens {
+					if strings.HasPrefix(token, ".") {
+						log.Debug("Excluding " + filename)
+						ishidden = true
+					}
+				}
+				if ishidden {
+					continue
+				}
+			}
+
 			f, err := os.Stat(filename)
 			if err == nil && f.IsDir() {
 				sf.watcher.Add(filename)
+				sf.handleDirCreate(filename)
 				continue
 			}
 			goodForWrite, err := checkFile(filename)
@@ -260,8 +342,8 @@ func (sf *SiaFolder) eventWatcher() {
 				}
 			}
 
-			// REMOVE event
-			if event.Op&fsnotify.Remove == fsnotify.Remove && !sf.archive {
+			// RENAME event - handle as remove since an actual rename is handeled as REMOVE and CREATE
+			if event.Op&fsnotify.Rename == fsnotify.Rename {
 				log.WithFields(logrus.Fields{
 					"filename": filename,
 				}).Info("File removal detected, removing file")
@@ -270,6 +352,24 @@ func (sf *SiaFolder) eventWatcher() {
 					log.WithFields(logrus.Fields{
 						"error": err.Error(),
 					}).Error("Error with handleRemove")
+				}
+			}
+
+			// REMOVE event
+			if event.Op&fsnotify.Remove == fsnotify.Remove && !sf.archive {
+				// Ignore multiple fired inode events by checking if the
+				// to be removed file is still know by sf
+				_, exists := sf.files[filename]
+				if exists {
+					log.WithFields(logrus.Fields{
+						"filename": filename,
+					}).Info("File removal detected, removing file")
+					err = sf.handleRemove(filename)
+					if err != nil {
+						log.WithFields(logrus.Fields{
+							"error": err.Error(),
+						}).Error("Error with handleRemove")
+					}
 				}
 			}
 
@@ -325,6 +425,17 @@ func uploadRetry(sf *SiaFolder, filename string) {
 	}
 }
 
+// isDirectory checks if `file` given as relative path is a directory.
+func (sf *SiaFolder) isDirectory(file string) bool {
+	// err will be nil if file is a dir
+	_, err := sf.client.RenterDirGet(getSiaPath(file))
+	if err == nil {
+		return true
+	}
+
+	return false
+}
+
 // isFile checks to see if the file exists on Sia
 func (sf *SiaFolder) isFile(file string) (bool, error) {
 	relpath, err := filepath.Rel(sf.path, file)
@@ -332,9 +443,13 @@ func (sf *SiaFolder) isFile(file string) (bool, error) {
 		return false, fmt.Errorf("error getting relative path: %v", err)
 	}
 
-	_, err = sf.client.RenterFileGet(newSiaPath(relpath))
+	_, err = sf.client.RenterFileGet(getSiaPath(relpath))
 	exists := true
+	// TODO Refactor to propper error handling e.g. compare err.Error() or use errors.Is()
 	if err != nil && strings.Contains(err.Error(), "no file known") {
+		exists = false
+	}
+	if err != nil && strings.Contains(err.Error(), "unable to get the fileinfo") {
 		exists = false
 	}
 	return exists, nil
@@ -382,6 +497,36 @@ func getSiaPath(relpath string) modules.SiaPath {
 	return newSiaPath(filepath.Join(prefix, relpath))
 }
 
+// handleDirCreate handle a file creation event for a dir. `file` is a relative path
+// to the file on the disk.
+func (sf *SiaFolder) handleDirCreate(file string) error {
+	abspath, err := filepath.Abs(file)
+	if err != nil {
+		return fmt.Errorf("error getting absolute path to create: %v", err)
+	}
+	relpath, err := filepath.Rel(sf.path, file)
+	if err != nil {
+		return fmt.Errorf("error getting relative path to create: %v", err)
+	}
+
+	log.WithFields(logrus.Fields{
+		"abspath": abspath,
+	}).Debug("Creating directory")
+
+	if !dryRun {
+		err = sf.client.RenterDirCreatePost(getSiaPath(relpath))
+		if err != nil {
+			return fmt.Errorf("error creating %v: %v", file, err)
+		}
+	}
+
+	sf.files[file] = ""
+	if sf.watcher != nil {
+		sf.watcher.Add(abspath)
+	}
+	return nil
+}
+
 // handleCreate handles a file creation event. `file` is a relative path to the
 // file on disk.
 func (sf *SiaFolder) handleCreate(file string) error {
@@ -400,10 +545,13 @@ func (sf *SiaFolder) handleCreate(file string) error {
 
 	if !dryRun {
 		err = sf.client.RenterUploadPost(abspath, getSiaPath(relpath), dataPieces, parityPieces)
-		if err.Error() == siafile.ErrPathOverload.Error() {
-			return nil
-		}
 		if err != nil {
+			// TODO This should be resolved by using err.Error() == siafile.ErrorPathOverload.Error()
+			//      Unfortunately the string values of the Error() instances do currently not match.
+			//      Alternative: Request Sia to support errors.Is(err, siafile.ErrorPathOverload)
+			if strings.Contains(err.Error(), "a file or folder already exists at the specified path") {
+				return nil
+			}
 			return fmt.Errorf("error uploading %v: %v", file, err)
 		}
 	}
@@ -428,9 +576,25 @@ func (sf *SiaFolder) handleRemove(file string) error {
 	}).Debug("Deleting file")
 
 	if !dryRun {
-		err = sf.client.RenterDeletePost(getSiaPath(relpath))
+		didRunSiaCmd := false
+		if sf.isDirectory(relpath) {
+			err = sf.client.RenterDirDeletePost(getSiaPath(relpath))
+			didRunSiaCmd = true
+		}
+
+		if ok, _ := sf.isFile(file); ok {
+			err = sf.client.RenterFileDeletePost(getSiaPath(relpath))
+			didRunSiaCmd = true
+		}
+
 		if err != nil {
 			return fmt.Errorf("error removing %v: %v", file, err)
+		}
+
+		if !didRunSiaCmd {
+			log.WithFields(logrus.Fields{
+				"file": file,
+			}).Error("Unhandled delete event")
 		}
 	}
 
@@ -441,12 +605,22 @@ func (sf *SiaFolder) handleRemove(file string) error {
 // uploadNonExisting runs once and performs any uploads required to ensure
 // every file in files is uploaded to the Sia node.
 func (sf *SiaFolder) uploadNonExisting() error {
-	renterFiles, err := sf.getSiaFiles()
+	renterFiles, err := sf.getSiaFiles(sf.prefix)
 	if err != nil && !strings.Contains(err.Error(), errNoFiles.Error()) {
 		return err
 	}
 
 	for file := range sf.files {
+		relpath, err := filepath.Rel(sf.path, file)
+		if err != nil {
+			return err
+		}
+
+		// Ignore directories
+		if sf.isDirectory(relpath) {
+			continue
+		}
+
 		goodForWrite, err := checkFile(filepath.Clean(file))
 		if err != nil {
 			log.WithFields(logrus.Fields{
@@ -457,10 +631,6 @@ func (sf *SiaFolder) uploadNonExisting() error {
 			continue
 		}
 
-		relpath, err := filepath.Rel(sf.path, file)
-		if err != nil {
-			return err
-		}
 		if _, ok := renterFiles[getSiaPath(relpath)]; !ok {
 			err := sf.handleCreate(file)
 			if err != nil {
@@ -475,7 +645,7 @@ func (sf *SiaFolder) uploadNonExisting() error {
 // uploadChanged runs once and performs any uploads of files where file size in
 // Sia is different from local file
 func (sf *SiaFolder) uploadChanged() error {
-	renterFiles, err := sf.getSiaFiles()
+	renterFiles, err := sf.getSiaFiles(sf.prefix)
 	if err != nil && !strings.Contains(err.Error(), errNoFiles.Error()) {
 		return err
 	}
@@ -509,10 +679,23 @@ func (sf *SiaFolder) uploadChanged() error {
 	return nil
 }
 
-// removeDeleted runs once and removes any files from Sia that don't exist in
+// removeDeletedFiles runs once and removes any files from Sia that don't exist in
 // local directory anymore
-func (sf *SiaFolder) removeDeleted() error {
-	renterFiles, err := sf.getSiaFiles()
+func (sf *SiaFolder) removeDeletedFiles(path string) error {
+	// First check if subdirectories have been deleted
+	renterDirs, err := sf.getSiaDirectories(path)
+	if err != nil {
+		return err
+	}
+
+	for siadir := range renterDirs {
+		if siadir.String() != path {
+			sf.removeDeletedFiles(siadir.String())
+		}
+	}
+
+	// Second check if files in directory have been deleted
+	renterFiles, err := sf.getSiaFiles(path)
 	if err != nil && !strings.Contains(err.Error(), errNoFiles.Error()) {
 		return err
 	}
@@ -528,7 +711,40 @@ func (sf *SiaFolder) removeDeleted() error {
 			continue
 		}
 
-		filePath := filepath.Join(sf.path, siapath.String())
+		// sf.prefix
+		sp := strings.Split(siapath.String(), "/")
+		filePath := filepath.Join(sf.path, strings.Join(sp[1:], "/"))
+		if _, ok := sf.files[filePath]; !ok {
+			err = sf.handleRemove(filePath)
+			if err != nil {
+				log.WithFields(logrus.Fields{
+					"error": err.Error(),
+				}).Error("Error with handleRemove")
+			}
+		}
+	}
+
+	return nil
+}
+
+// removeDeletedDirectories runs once and removes any directories from Sia that don't exist in
+// local directory anymore
+func (sf *SiaFolder) removeDeletedDirectories(path string) error {
+	renterDirectories, err := sf.getSiaDirectories(path)
+	if err != nil {
+		return err
+	}
+
+	for siapath := range renterDirectories {
+		// sf.prefix
+		sp := strings.Split(siapath.String(), "/")
+
+		// If this is a subdirectory in current directory ascend to it
+		if len(sp) > len(strings.Split(path, "/")) {
+			sf.removeDeletedDirectories(strings.Join(sp, "/"))
+		}
+
+		filePath := filepath.Join(sf.path, strings.Join(sp[1:], "/"))
 		if _, ok := sf.files[filePath]; !ok {
 			err = sf.handleRemove(filePath)
 			if err != nil {
@@ -543,8 +759,10 @@ func (sf *SiaFolder) removeDeleted() error {
 }
 
 // filters Sia remote files, only files that match prefix parameter are returned
-func (sf *SiaFolder) getSiaFiles() (map[modules.SiaPath]modules.FileInfo, error) {
-	siaSyncDir, err := sf.client.RenterGetDir(newSiaPath(prefix))
+func (sf *SiaFolder) getSiaFiles(path string) (map[modules.SiaPath]modules.FileInfo, error) {
+	// To get relative path remove the prefix
+	lpx := len(strings.Split(sf.prefix, "/"))
+	siaSyncDir, err := sf.client.RenterDirGet(getSiaPath(strings.Join(strings.Split(path, "/")[lpx:], "/")))
 	if err != nil {
 		return nil, err
 	}
@@ -553,4 +771,19 @@ func (sf *SiaFolder) getSiaFiles() (map[modules.SiaPath]modules.FileInfo, error)
 		siaFiles[file.SiaPath] = file
 	}
 	return siaFiles, nil
+}
+
+// filters Sia remote directories, only directories that match prefix parameter are returned
+func (sf *SiaFolder) getSiaDirectories(path string) (map[modules.SiaPath]modules.DirectoryInfo, error) {
+	// To get relative path remove the prefix
+	lpx := len(strings.Split(sf.prefix, "/"))
+	siaSyncDir, err := sf.client.RenterDirGet(getSiaPath(strings.Join(strings.Split(path, "/")[lpx:], "/")))
+	if err != nil {
+		return nil, err
+	}
+	siaDirectories := make(map[modules.SiaPath]modules.DirectoryInfo)
+	for _, directory := range siaSyncDir.Directories {
+		siaDirectories[directory.SiaPath] = directory
+	}
+	return siaDirectories, nil
 }

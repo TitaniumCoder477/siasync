@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"strings"
@@ -22,6 +21,7 @@ var (
 	includeExtensions []string
 	exclude           string
 	excludeExtensions []string
+	includeHidden     bool
 	siaDir            string
 	dataPieces        uint64
 	parityPieces      uint64
@@ -74,13 +74,14 @@ func findAPIPassword() string {
 	}
 
 	// password from apipassword file
-	APIPasswordFile, err := ioutil.ReadFile(build.APIPasswordFile(build.DefaultSiaDir()))
+	// No password passed in, fetch the API Password
+	pw, err := build.APIPassword()
 	if err != nil {
-		log.WithFields(logrus.Fields{
-			"error": err.Error(),
-		}).Error("Could not read API password file")
+		fmt.Println("Exiting: Error getting API Password:", err)
+		os.Exit(1)
 	}
-	return strings.TrimSpace(string(APIPasswordFile))
+
+	return pw
 }
 
 // testConnection test the connection to the sia network
@@ -132,6 +133,7 @@ func main() {
 	flag.BoolVar(&debug, "debug", false, "Enable debug mode. Warning: generates a lot of output.")
 	flag.StringVar(&prefix, "subfolder", "siasync", "Folder on Sia to sync files too")
 	flag.StringVar(&include, "include", "", "Comma separated list of file extensions to copy, all other files will be ignored.")
+	flag.BoolVar(&includeHidden, "include-hidden", false, "Hidden files are excluded by default. Use this to include hidden files.")
 	flag.StringVar(&exclude, "exclude", "", "Comma separated list of file extensions to skip, all other files will be copied.")
 	flag.Uint64Var(&dataPieces, "data-pieces", 10, "Number of data pieces in erasure code")
 	flag.Uint64Var(&parityPieces, "parity-pieces", 30, "Number of parity pieces in erasure code")
