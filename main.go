@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/signal"
 	"strings"
@@ -59,29 +60,29 @@ func Usage() {
 
 // findAPIPassword looks for the API password via a flag, env variable, or the
 // default apipassword file
-func findAPIPassword() string {
+func findAPIPassword() (string, error) {
 	// password from cli -password flag
 	if password != "" {
 		log.Info("Using API password submitted by user")
-		return password
+		return password, nil
 	}
 
 	// password from environment variable
 	envPassword := os.Getenv("SIA_API_PASSWORD")
 	if envPassword != "" {
 		log.Info("Using Environnement Variable API password")
-		return envPassword
+		return envPassword, nil
 	}
 
-	// password from apipassword file
-	// No password passed in, fetch the API Password
-	pw, err := build.APIPassword()
-	if err != nil {
-		fmt.Println("Exiting: Error getting API Password:", err)
-		os.Exit(1)
+	// Try to read the password from disk.
+	path := build.APIPasswordFile(siaDir)
+	pwFile, err := ioutil.ReadFile(path)
+	if err == nil {
+		// This is the "normal" case, so don't print anything.
+		return strings.TrimSpace(string(pwFile)), nil
+	} else {
+		return "", err
 	}
-
-	return pw
 }
 
 // testConnection test the connection to the sia network
@@ -147,7 +148,7 @@ func main() {
 	initLogger(debug)
 
 	sc := sia.New(*address)
-	sc.Password = findAPIPassword()
+	sc.Password, _ = findAPIPassword()
 	sc.UserAgent = *agent
 	directory := os.Args[len(os.Args)-1]
 
